@@ -62,12 +62,17 @@ readWaveFileData fp = do
   return bs
 
 getFloat :: Word8 -> Word8 -> Double
-getFloat w1 w2 = fromIntegral (w1shifted + (fromIntegral w2))
+getFloat w2 w1 = fromIntegral res2
   where w1shifted :: Word16
         w1shifted = (fromIntegral w1) `shiftL` 8
+        res2 :: Int16
+        res2 = (fromIntegral res)
+        res :: Word16
+        res = w1shifted + (fromIntegral w2)
 
 topAPI :: ByteString -> [MelFilterBank]
-topAPI bs = map (makeFilterBank . processFrame) frames
+topAPI bs = map (map log) $
+  map (makeFilterBank . processFrame) frames
   where
     frames :: [Frame]
     frames =  map f [0 .. (numOfFrames - 1)]
@@ -76,6 +81,27 @@ topAPI bs = map (makeFilterBank . processFrame) frames
       getFloat (bs `BS.index` ((2 * i * frameStepLength) + (2 * j)))
         (bs `BS.index` ((2 * i * frameStepLength) + (2 * j) + 1))
 
+
+    numOfFrames = ceiling $ (fromIntegral dataSize) /
+      (fromIntegral frameStepLength)
+    -- 16 bit of data
+    dataSize = floor ((fromIntegral (BS.length bs)) /2)
+
+makeFrames :: ByteString -> IO ([Frame])
+makeFrames bs = do
+  writeFile "frames.out" (show frames)
+  return frames
+  where
+    frames :: [Frame]
+    frames =  map f [0 .. (numOfFrames - 1)]
+    f :: Int -> Frame
+    f i = V.generate frameLength (g i)
+
+    g i j = if index < BS.length bs
+               then getFloat (bs `BS.index` index) (bs `BS.index` (index + 1))
+               else 0
+      where
+        index = (2 * i * frameStepLength) + (2 * j)
 
     numOfFrames = ceiling $ (fromIntegral dataSize) /
       (fromIntegral frameStepLength)
@@ -122,11 +148,11 @@ makeFilterBank frame =
 getBankPower :: PowerValues -> MelFilter -> MelFilterBank
 getBankPower pwr filt =
   runST $ do
-    v <- VM.new melFilterBankCount
+    v <- VM.replicate melFilterBankCount 0.0
     let genV v _ i (b,wt) = do
-          VM.modify v (\x -> x + (pwr V.! i) * wt) b
-          unless ( b == 0) $
-            VM.modify v (\x -> x + (pwr V.! i) * (1 - wt)) (b - 1)
+          VM.modify v (\x -> x + (pwr V.! i) * wt) (b - 1)
+          unless ( b == 1) $
+            VM.modify v (\x -> x + (pwr V.! i) * (1 - wt)) (b - 2)
     V.ifoldM (genV v) () filt
     V.freeze v
 
