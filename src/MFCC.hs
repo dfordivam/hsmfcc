@@ -4,10 +4,12 @@ module MFCC where
 
 import Protolude
 import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as VM
 import Data.Vector (Vector)
 import Numeric.FFT
 import Codec.Audio.Wave
 import qualified Data.ByteString as BS
+import Control.Monad.ST
 
 import GHC.IO.Handle (hSetPosn, HandlePosn(..))
 
@@ -107,7 +109,7 @@ type PowerValues = Vector Double
 
 makeFilterBank :: Frame -> MelFilterBank
 makeFilterBank frame =
-  map (getPowerInBank pwr) melBankFilters
+  getBankPower pwr melBankFilters
   where
     fOut = fft paddedFrame
     paddedFrame = frameComplex ++ (replicate (fftSize - (length frame)) (0 :+ 0))
@@ -117,54 +119,53 @@ makeFilterBank frame =
     pwr = V.fromList $ take (nv2 + 1) $
       map (\(r :+ i) -> sqrt (r*r + i*i)) fOut
 
-getPowerInBank :: PowerValues -> FilterBin -> Double
-getPowerInBank pwr (k,loF,hiF,weightsVec) =
-  sum $ V.zipWith (*) weightsVec pwrBin
-  where pwrBin = V.slice loF hiF pwr
+getBankPower :: PowerValues -> MelFilter -> MelFilterBank
+getBankPower pwr filt =
+  runST $ do
+    v <- VM.new melFilterBankCount
+    let genV v _ i (b,wt) = do
+          VM.modify v (\x -> x + (pwr V.! i) * wt) b
+          unless ( b == 0) $
+            VM.modify v (\x -> x + (pwr V.! i) * (1 - wt)) (b - 1)
+    V.ifoldM (genV v) () filt
+    V.freeze v
 
--- (Bin number, bin start freq, bin end freq, weights vector)
-type FilterBin = (Int, Int, Int, Vector Double)
-type MelBankFilters = Vector FilterBin
+-- Freq -> (bin number, lower weight)
+-- For each freq f; it belongs to the lower region of bin k
+-- and higher freq region of bin (k - 1)
+-- The weight wt is added to the bin k and (1 - wt) to bin (k - 1)
+type MelFilter = Vector (Int, Double)
 
-melBankFilters :: MelBankFilters
-melBankFilters = V.generate melFilterBankCount f
+melBankFilters :: MelFilter
+melBankFilters = V.generate (nv2 + 1) genF
   where
     -- Start of first bin freq
-    mlo = mel 0
+    mlo = 0
     -- End of last bin freq
     mhi = mel (nv2 + 1)
-    -- Step 0 to 256
+    -- Mel freq range for 0 to 256
     ms = mhi - mlo
 
-    -- Mel freq for bank k
-    bankMfreq k =
-      ((fromIntegral k) * ms)/(fromIntegral melFilterBankCount)
+    bankForMelFreq :: Double -> Int
+    bankForMelFreq mf = ceiling (((mf - mlo) * (fromIntegral melFilterBankCount)/ms))
 
-    f n = (k,loF,hiF,weightsVec)
+    bankMfreq :: Int -> Double
+    bankMfreq b = mlo + ((fromIntegral b) * ms) / (fromIntegral melFilterBankCount)
+
+    genF :: Int -> (Int, Double)
+    genF 0 = (1, 0)
+    genF f = (b,wt)
       where
-        k = n + 1 -- 1 to melFilterBankCount
-        -- Mel freq for this bank
+        --
+        b = bankForMelFreq (mel f)
 
-        centerMF = bankMfreq k
-        loMF = bankMfreq $ k - 1
-        hiMF = bankMfreq $ k + 1
-        -- It is the center of previous mel bank
-        loF = imel loMF
-        hiF = imel hiMF
-        centerF = imel centerMF
-        weightsVec = V.generate (hiF - loF + 1) g
-          where
-            -- Triangular
-            g m = if freq < centerF
-                     then 1 - (c - (mel freq)) /
-                          (c - l)
-                     else (h - (mel freq)) /
-                          (h - c)
-              where
-                freq = m + loF
-                c = mel centerF
-                l = mel loF
-                h = mel hiF
+        nextBankMF = bankMfreq b
+        firstBankMF = bankMfreq 1
+        prevBankMF = bankMfreq (b - 1)
+        wt = if b == 1
+          -- Special case
+          then 1 - (firstBankMF - (mel f)) / (firstBankMF - mlo)
+          else 1 - (nextBankMF - (mel f)) / (nextBankMF - prevBankMF)
 
 -- type CepstalCoeficients = Vector Double
 -- -- default CepstalCoeficient count = 12
