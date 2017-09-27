@@ -9,6 +9,7 @@ import Data.Vector (Vector)
 import Numeric.FFT
 import Codec.Audio.Wave
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as BS
 import Control.Monad.ST
 
 import GHC.IO.Handle (hSetPosn, HandlePosn(..))
@@ -70,6 +71,22 @@ getFloat w2 w1 = fromIntegral res2
         res :: Word16
         res = w1shifted + (fromIntegral w2)
 
+writeFloatData fp = do
+  bs <- readWaveFileData fp
+  let mels = topAPI bs
+      buil = mconcat $ map (\v -> mconcat $
+                           map (BS.floatLE . realToFrac) $ V.toList v) mels
+  h <- openFile "melfilter.data" WriteMode
+  BS.hPutBuilder h buil
+-- writeHTKFile fp = do
+--   openFile "out.htk" WriteMode
+--   bs <- readWaveFileData fp
+--   let mels = topAPI bs
+--       samples = length mels
+--       sampSize = melFilterBankCount * 4 -- 4 Byte float
+--       sampPeriod = 625
+--       parmKind = + 7
+  
 topAPI :: ByteString -> [MelFilterBank]
 topAPI bs = map (map log) $
   map (makeFilterBank . processFrame) frames
@@ -77,10 +94,13 @@ topAPI bs = map (map log) $
     frames :: [Frame]
     frames =  map f [0 .. (numOfFrames - 1)]
     f :: Int -> Frame
-    f i = V.generate frameLength $ \j ->
-      getFloat (bs `BS.index` ((2 * i * frameStepLength) + (2 * j)))
-        (bs `BS.index` ((2 * i * frameStepLength) + (2 * j) + 1))
+    f i = V.generate frameLength (g i)
 
+    g i j = if index < BS.length bs
+               then getFloat (bs `BS.index` index) (bs `BS.index` (index + 1))
+               else 0
+      where
+        index = (2 * i * frameStepLength) + (2 * j)
 
     numOfFrames = ceiling $ (fromIntegral dataSize) /
       (fromIntegral frameStepLength)
