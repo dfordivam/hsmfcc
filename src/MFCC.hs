@@ -9,6 +9,7 @@ import Data.Vector (Vector)
 import Numeric.FFT
 import Codec.Audio.Wave
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Builder as BS
 import Control.Monad.ST
 
@@ -59,7 +60,6 @@ readWaveFileData fp = do
   h <- openFile fp ReadMode
   hSetPosn (HandlePosn h (fromIntegral (waveDataOffset wd)))
   bs <- BS.hGetContents h
-  BS.writeFile "bs.out" bs
   return bs
 
 getFloat :: Word8 -> Word8 -> Double
@@ -70,6 +70,14 @@ getFloat w2 w1 = fromIntegral res2
         res2 = (fromIntegral res)
         res :: Word16
         res = w1shifted + (fromIntegral w2)
+
+-- getMelDataFromWave :: FilePath -> IO (ByteString)
+getMelDataFromWave fp = do
+  bs <- readWaveFileData fp
+  let mels = topAPI bs
+      buil = mconcat $ map (\v -> mconcat $
+                           map (BS.floatLE . realToFrac) $ V.toList v) mels
+  return $ BSL.toStrict $ BS.toLazyByteString buil
 
 writeFloatData fp = do
   bs <- readWaveFileData fp
@@ -86,7 +94,7 @@ writeFloatData fp = do
 --       sampSize = melFilterBankCount * 4 -- 4 Byte float
 --       sampPeriod = 625
 --       parmKind = + 7
-  
+
 topAPI :: ByteString -> [MelFilterBank]
 topAPI bs = map (map log) $
   map (makeFilterBank . processFrame) frames
